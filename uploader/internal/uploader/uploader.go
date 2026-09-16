@@ -203,7 +203,7 @@ func (r *UploadRequest) readFirstRow() ([]string, error) {
 	}
 
 	if rows.Next() {
-		row, err := rows.Columns()
+		row, err := rows.Columns(excelize.Options{RawCellValue: true})
 		if err != nil {
 			return nil, ErrBadRequest.Wrap(xerrors.Errorf("unable to read first row of sheet %q: %w", r.Sheet, err))
 		}
@@ -223,9 +223,9 @@ func (r *UploadRequest) readSecondRow() ([]string, error) {
 	_, _ = rows.Columns()
 
 	if rows.Next() {
-		row, err := rows.Columns()
+		row, err := rows.Columns(excelize.Options{RawCellValue: true})
 		if err != nil {
-			return nil, ErrBadRequest.Wrap(xerrors.Errorf("unable to read first row of sheet %q: %w", r.Sheet, err))
+			return nil, ErrBadRequest.Wrap(xerrors.Errorf("unable to read second row of sheet %q: %w", r.Sheet, err))
 		}
 		return row, nil
 	}
