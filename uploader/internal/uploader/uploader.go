@@ -201,6 +201,7 @@ func (r *UploadRequest) readFirstRow() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = rows.Close() }()
 
 	if rows.Next() {
 		row, err := rows.Columns(excelize.Options{RawCellValue: true})
@@ -218,9 +219,12 @@ func (r *UploadRequest) readSecondRow() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = rows.Close() }()
 
 	rows.Next()
-	_, _ = rows.Columns()
+	if _, err := rows.Columns(); err != nil {
+		return nil, ErrBadRequest.Wrap(xerrors.Errorf("unable to read first row of sheet %q: %w", r.Sheet, err))
+	}
 
 	if rows.Next() {
 		row, err := rows.Columns(excelize.Options{RawCellValue: true})
@@ -346,6 +350,7 @@ func upload(req *UploadRequest, s *schema.Schema, out yt.TableWriter) error {
 	if err != nil {
 		return ErrBadRequest.Wrap(xerrors.Errorf("unable to read rows of sheet %q: %w", req.Sheet, err))
 	}
+	defer func() { _ = rows.Close() }()
 
 	for i := 1; rows.Next(); i++ {
 		row, err := rows.Columns(excelize.Options{RawCellValue: true})
@@ -389,6 +394,10 @@ func upload(req *UploadRequest, s *schema.Schema, out yt.TableWriter) error {
 		if err := out.Write(m); err != nil {
 			return xerrors.Errorf("error writing row %+q: %w", m, err)
 		}
+	}
+
+	if err := rows.Error(); err != nil {
+		return ErrBadRequest.Wrap(xerrors.Errorf("unable to read rows of sheet %q: %w", req.Sheet, err))
 	}
 
 	return out.Commit()
