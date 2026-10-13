@@ -1,7 +1,9 @@
 package exporter
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,59 @@ import (
 	"go.ytsaurus.tech/yt/go/schema"
 	"go.ytsaurus.tech/yt/go/yson"
 )
+
+type sliceTableReader struct {
+	rows  []map[string]any
+	index int
+}
+
+func (r *sliceTableReader) Next() bool {
+	r.index++
+	return r.index < len(r.rows)
+}
+
+func (r *sliceTableReader) Scan(value any) error {
+	row, ok := value.(*map[string]any)
+	if !ok {
+		return fmt.Errorf("expected *map[string]any, got %T", value)
+	}
+	*row = r.rows[r.index]
+	return nil
+}
+
+func (r *sliceTableReader) Err() error   { return nil }
+func (r *sliceTableReader) Close() error { return nil }
+
+type generatedTableReader struct {
+	columns  []string
+	rowCount int
+	index    int
+}
+
+func (r *generatedTableReader) Next() bool {
+	r.index++
+	return r.index < r.rowCount
+}
+
+func (r *generatedTableReader) Scan(value any) error {
+	row, ok := value.(*map[string]any)
+	if !ok {
+		return fmt.Errorf("expected *map[string]any, got %T", value)
+	}
+	result := make(map[string]any, len(r.columns))
+	for index, column := range r.columns {
+		if index == 0 {
+			result[column] = int64(r.index)
+		} else {
+			result[column] = "0123456789abcdef0123456789abcdef"
+		}
+	}
+	*row = result
+	return nil
+}
+
+func (r *generatedTableReader) Err() error   { return nil }
+func (r *generatedTableReader) Close() error { return nil }
 
 func TestMakeHeader(t *testing.T) {
 	for _, tc := range []struct {
@@ -41,6 +96,94 @@ func TestMakeHeader(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			require.Equal(t, tc.header, makeHeader(tc.columns, tc.schema))
 		})
+	}
+}
+
+func TestConvertSchemafulModes(t *testing.T) {
+	tableSchema := &schema.Schema{Columns: []schema.Column{
+		{Name: "id", Type: schema.TypeInt64},
+		{Name: "name", Type: schema.TypeString},
+	}}
+	expected := [][]string{
+		{"id", "name"},
+		{"int64", "utf8"},
+		{"1", "one"},
+		{"2", "two"},
+	}
+
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("streaming=%t", streaming), func(t *testing.T) {
+			reader := &sliceTableReader{
+				index: -1,
+				rows: []map[string]any{
+					{"id": int64(1), "name": "one"},
+					{"id": int64(2), "name": "two"},
+				},
+			}
+
+			file, err := Convert(reader, &ConvertOptions{
+				Columns: []string{"id", "name"},
+				Schema:  tableSchema,
+				ExportOptions: &ExportOptions{
+					MaxExcelFileSize:     1024 * 1024,
+					EnableStreamingWrite: streaming,
+				},
+				NumberPrecisionMode: NumberPrecisionModeString,
+			})
+			require.NoError(t, err)
+
+			var output bytes.Buffer
+			require.NoError(t, file.Write(&output))
+			require.NoError(t, file.Close())
+
+			result, err := excelize.OpenReader(bytes.NewReader(output.Bytes()))
+			require.NoError(t, err)
+			defer func() { require.NoError(t, result.Close()) }()
+
+			rows, err := result.GetRows(SheetName)
+			require.NoError(t, err)
+			require.Equal(t, expected, rows)
+		})
+	}
+}
+
+func BenchmarkExportSchemafulModes(b *testing.B) {
+	columns := make([]string, 15)
+	tableSchema := &schema.Schema{Columns: make([]schema.Column, len(columns))}
+	for index := range columns {
+		columns[index] = fmt.Sprintf("column_%02d", index)
+		columnType := schema.TypeString
+		if index == 0 {
+			columnType = schema.TypeInt64
+		}
+		tableSchema.Columns[index] = schema.Column{Name: columns[index], Type: columnType}
+	}
+
+	for _, rowCount := range []int{10_000, 50_000} {
+		for _, streaming := range []bool{false, true} {
+			b.Run(fmt.Sprintf("rows=%d/streaming=%t", rowCount, streaming), func(b *testing.B) {
+				b.ReportAllocs()
+				for range b.N {
+					reader := &generatedTableReader{
+						columns:  columns,
+						rowCount: rowCount,
+						index:    -1,
+					}
+					file, err := Convert(reader, &ConvertOptions{
+						Columns: columns,
+						Schema:  tableSchema,
+						ExportOptions: &ExportOptions{
+							MaxExcelFileSize:     1024 * 1024 * 1024,
+							EnableStreamingWrite: streaming,
+						},
+						NumberPrecisionMode: NumberPrecisionModeString,
+					})
+					require.NoError(b, err)
+					require.NoError(b, file.Write(io.Discard))
+					require.NoError(b, file.Close())
+				}
+			})
+		}
 	}
 }
 

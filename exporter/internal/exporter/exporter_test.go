@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/xuri/excelize/v2"
 	"go.uber.org/zap/zaptest"
 
 	"go.ytsaurus.tech/library/go/core/log/zap"
@@ -23,6 +24,21 @@ import (
 )
 
 const QueryResultID = "bc3dace-d71d30a6-51be519e-7692cfc3"
+
+func materializeWorkbook(t *testing.T, file *excelize.File) *excelize.File {
+	t.Helper()
+
+	var output bytes.Buffer
+	require.NoError(t, file.Write(&output))
+	require.NoError(t, file.Close())
+
+	result, err := excelize.OpenReader(bytes.NewReader(output.Bytes()))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, result.Close())
+	})
+	return result
+}
 
 func TestMakeExportRequest(t *testing.T) {
 	for _, tc := range []struct {
@@ -376,10 +392,15 @@ func TestExportFile(t *testing.T) {
 				require.NoError(t, err)
 				t.Logf("Saving excel file to %q", outFilename)
 				require.NoError(t, f.File.Write(outFile))
+				require.NoError(t, outFile.Close())
+				require.NoError(t, f.File.Close())
 
-				rows, err := f.File.GetRows(SheetName)
+				result, err := excelize.OpenFile(outFilename)
+				require.NoError(t, err)
+				rows, err := result.GetRows(SheetName)
 				require.NoError(t, err)
 				require.Equal(t, tc.expected, rows)
+				require.NoError(t, result.Close())
 			} else {
 				require.Error(t, err)
 			}
@@ -421,10 +442,11 @@ func TestLosePrecision(t *testing.T) {
 
 	f, err := Export(env.Ctx, env.YT, req, &ExportOptions{MaxExcelFileSize: 1024 * 1024 * 10})
 	require.NoError(t, err)
+	result := materializeWorkbook(t, f.File)
 
-	uintVal, err := f.File.GetCellValue("Sheet1", "A3")
+	uintVal, err := result.GetCellValue("Sheet1", "A3")
 	require.NoError(t, err)
-	doubleVal, err := f.File.GetCellValue("Sheet1", "B3")
+	doubleVal, err := result.GetCellValue("Sheet1", "B3")
 	require.NoError(t, err)
 
 	require.Equal(t, "4291747200000000", uintVal)
@@ -466,6 +488,8 @@ func TestExportQueryResult(t *testing.T) {
 	require.NoError(t, err)
 	t.Logf("Saving excel file to %q", outFilename)
 	require.NoError(t, f.File.Write(outFile))
+	require.NoError(t, outFile.Close())
+	require.NoError(t, f.File.Close())
 }
 
 func BenchmarkExport(b *testing.B) {
@@ -549,20 +573,26 @@ func BenchmarkExport(b *testing.B) {
 			}
 		})
 
-		b.Run("convert/"+bm.name, func(b *testing.B) {
-			req := bm.prepareRequest()
-			opts := &ExportOptions{MaxExcelFileSize: 1024 * 1024 * 100}
-			b.ResetTimer()
+		for _, streaming := range []bool{false, true} {
+			b.Run(fmt.Sprintf("convert/streaming=%t/%s", streaming, bm.name), func(b *testing.B) {
+				req := bm.prepareRequest()
+				opts := &ExportOptions{
+					MaxExcelFileSize:     1024 * 1024 * 100,
+					EnableStreamingWrite: streaming,
+				}
+				b.ResetTimer()
 
-			runBenchmark := func() {
-				_, err := Export(env.Ctx, env.YT, req, opts)
-				require.NoError(b, err)
-			}
+				runBenchmark := func() {
+					result, err := Export(env.Ctx, env.YT, req, opts)
+					require.NoError(b, err)
+					require.NoError(b, result.File.Close())
+				}
 
-			for i := 0; i < b.N; i++ {
-				runBenchmark()
-			}
-		})
+				for i := 0; i < b.N; i++ {
+					runBenchmark()
+				}
+			})
+		}
 	}
 }
 

@@ -59,7 +59,7 @@ BenchmarkExport/read/subset/large-8                   20         407521985 ns/op
 BenchmarkExport/convert/subset/large-8                20         719223986 ns/op        179296687 B/op   3305535 allocs/op
 ```
 
-`BenchmarkExport/convert` measures conversion statistics for tables of different sizes.
+`BenchmarkExport/convert` measures conversion statistics for tables of different sizes. Each conversion benchmark runs with both `streaming=false` (legacy writer) and `streaming=true` (stream writer), so their `B/op` and `allocs/op` results can be compared directly.
 
 `BenchmarkExport/read` measures statistics for reading YTsaurus static tables of different sizes.
 

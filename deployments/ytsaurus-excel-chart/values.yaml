@@ -47,6 +47,10 @@ settings:
     # Default: 10485760 (10 Mb).
     max_excel_file_size_bytes: 104857600 # (100 MB)
 
+    # Use Excelize's streaming writer for schemaful exports.
+    # Default: false.
+    enable_streaming_write: false
+
     # Specifies global path prefix used in API endpoint path:
     #   <http_addr>/<api_path_prefix>/<api_endpoint_name>/api/
     # Default: empty.
@@ -114,6 +118,5 @@ readinessProbe:
 
 
 nodeSelector: {}
-
 
 

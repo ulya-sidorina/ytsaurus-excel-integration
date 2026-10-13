@@ -153,7 +153,8 @@ func (r *ExportRequest) MakeFileName(suffix string) string {
 }
 
 type ExportOptions struct {
-	MaxExcelFileSize int
+	MaxExcelFileSize     int
+	EnableStreamingWrite bool
 }
 
 type ExportResponse struct {

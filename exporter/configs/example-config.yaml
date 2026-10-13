@@ -12,6 +12,10 @@ http_handler_timeout: 2m
 # Default: 52428800 (50 Mb)
 max_excel_file_size_bytes: 104857600 # (100 MB)
 
+# Use Excelize's streaming writer for schemaful exports.
+# Default: false.
+enable_streaming_write: false
+
 # Name of the request cookie that service forwards to YT.
 # YT proxy uses this cookie to authorize requester.
 # Default: Session_id.
