@@ -18,18 +18,24 @@ import (
 func rowWeight(row map[int]excelize.Cell) int {
 	weight := 0
 	for _, cell := range row {
-		switch t := cell.Value.(type) {
-		case int8, uint8, int16, uint16, int, uint, int32, uint32, int64, uint64, float64:
-			weight += 8
-		case bool:
-			weight += 1
-		case string:
-			weight += len(t)
-		case []byte:
-			weight += len(t)
-		}
+		weight += cellWeight(cell)
 	}
 	return weight
+}
+
+func cellWeight(cell excelize.Cell) int {
+	switch value := cell.Value.(type) {
+	case int8, uint8, int16, uint16, int, uint, int32, uint32, int64, uint64, float32, float64:
+		return 8
+	case bool:
+		return 1
+	case string:
+		return len(value)
+	case []byte:
+		return len(value)
+	default:
+		return 0
+	}
 }
 
 // randomName returns 8 random bytes in hex.

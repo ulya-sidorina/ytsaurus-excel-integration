@@ -328,18 +328,16 @@ func Convert(r yt.TableReader, opts *ConvertOptions) (*excelize.File, error) {
 	out := excelize.NewFile()
 
 	hasSchema := opts.Schema != nil && len(opts.Schema.Columns) > 0
+	useStreamingWrite := hasSchema && opts.ExportOptions.EnableStreamingWrite
 
 	var nameToCol map[string]*Column
 	var nextColIndex int
 
 	if hasSchema {
 		nameToCol = makeHeader(opts.Columns, opts.Schema)
-		if err := writeHeader(nameToCol, out, opts.OmitTypes); err != nil {
-			return nil, err
-		}
-		for _, col := range nameToCol {
-			if col.Index >= nextColIndex {
-				nextColIndex = col.Index + 1
+		if !useStreamingWrite {
+			if err := writeHeader(nameToCol, out, opts.OmitTypes); err != nil {
+				return nil, err
 			}
 		}
 	} else {
@@ -377,12 +375,12 @@ func Convert(r yt.TableReader, opts *ConvertOptions) (*excelize.File, error) {
 	}
 
 	c := &converter{styles: styles, numberPrecisionMode: opts.NumberPrecisionMode}
-
-	convert := func(col *Column, v any) (excelize.Cell, error) {
-		if hasSchema {
-			return c.convert(col.Type, v)
+	if useStreamingWrite {
+		if err := convertSchemaful(r, opts, out, nameToCol, c); err != nil {
+			_ = out.Close()
+			return nil, err
 		}
-		return c.convertAuto(v)
+		return out, nil
 	}
 
 	totalRowWeight := 0
@@ -415,13 +413,18 @@ func Convert(r yt.TableReader, opts *ConvertOptions) (*excelize.File, error) {
 				return nil, xerrors.Errorf("unable to find column %s in schema %+v", k, nameToCol)
 			}
 
-			cell, err := convert(col, v)
+			var cell excelize.Cell
+			if hasSchema {
+				cell, err = c.convert(col.Type, v)
+			} else {
+				cell, err = c.convertAuto(v)
+			}
 			if err != nil {
 				errRowIndex := excelRowNumber - 1
 				if hasSchema {
 					errRowIndex = excelRowNumber - 2
 					if !opts.OmitTypes {
-						errRowIndex = excelRowNumber - 3
+						errRowIndex--
 					}
 				}
 				return nil, fmt.Errorf("error converting value from column %s and row %d: %w", k, errRowIndex, err)
@@ -440,15 +443,9 @@ func Convert(r yt.TableReader, opts *ConvertOptions) (*excelize.File, error) {
 			}
 		}
 
-		// Even if stream writer is used excelize will materialize the whole excel file in memory on write.
-		// That's why a special heuristic is used to control the output file size.
-		// todo remove when https://github.com/360EntSecGroup-Skylar/excelize/issues/650 is resolved.
 		totalRowWeight += rowWeight(excelRow)
 		if totalRowWeight >= opts.ExportOptions.MaxExcelFileSize {
-			return nil, xerrors.Errorf("max total row weight exceeded: %v >= %v; "+
-				"try specifying a smaller range of rows or exclude unneeded columns",
-				datasize.ByteSize(totalRowWeight).HumanReadable(),
-				datasize.ByteSize(opts.ExportOptions.MaxExcelFileSize).HumanReadable())
+			return nil, maxFileSizeError(totalRowWeight, opts.ExportOptions.MaxExcelFileSize)
 		}
 
 		excelRowNumber++
@@ -459,6 +456,91 @@ func Convert(r yt.TableReader, opts *ConvertOptions) (*excelize.File, error) {
 	}
 
 	return out, nil
+}
+
+// convertSchemaful writes rows directly to the worksheet stream. Excelize keeps
+// only a bounded worksheet buffer in memory and spills larger data to a temporary
+// file, instead of retaining the complete worksheet object graph.
+func convertSchemaful(
+	r yt.TableReader,
+	opts *ConvertOptions,
+	out *excelize.File,
+	nameToCol map[string]*Column,
+	c *converter,
+) error {
+	stream, err := out.NewStreamWriter(SheetName)
+	if err != nil {
+		return err
+	}
+
+	if err := writeStreamHeader(nameToCol, stream, opts.OmitTypes); err != nil {
+		return err
+	}
+
+	totalRowWeight := 0
+	excelRowNumber := 2
+	if !opts.OmitTypes {
+		excelRowNumber++
+	}
+	excelRow := make([]interface{}, len(nameToCol))
+
+	for r.Next() {
+		var row map[string]any
+		if err := r.Scan(&row); err != nil {
+			return xerrors.Errorf("error reading table row: %w", err)
+		}
+
+		clear(excelRow)
+		rowWeight := 0
+		for name, value := range row {
+			if value == nil {
+				continue
+			}
+
+			col, ok := nameToCol[name]
+			if !ok {
+				return xerrors.Errorf("unable to find column %s in schema %+v", name, nameToCol)
+			}
+
+			cell, err := c.convert(col.Type, value)
+			if err != nil {
+				errRowIndex := excelRowNumber - 2
+				if !opts.OmitTypes {
+					errRowIndex--
+				}
+				return fmt.Errorf("error converting value from column %s and row %d: %w", name, errRowIndex, err)
+			}
+
+			excelRow[col.Index-1] = cell
+			rowWeight += cellWeight(cell)
+		}
+
+		totalRowWeight += rowWeight
+		if totalRowWeight >= opts.ExportOptions.MaxExcelFileSize {
+			return maxFileSizeError(totalRowWeight, opts.ExportOptions.MaxExcelFileSize)
+		}
+
+		axis, _ := excelize.CoordinatesToCellName(1, excelRowNumber)
+		if err := stream.SetRow(axis, excelRow); err != nil {
+			return err
+		}
+		excelRowNumber++
+	}
+
+	if r.Err() != nil {
+		return xerrors.Errorf("error reading data: %w", r.Err())
+	}
+	if err := stream.Flush(); err != nil {
+		return xerrors.Errorf("error flushing excel stream: %w", err)
+	}
+	return nil
+}
+
+func maxFileSizeError(totalRowWeight, maxExcelFileSize int) error {
+	return xerrors.Errorf("max total row weight exceeded: %v >= %v; "+
+		"try specifying a smaller range of rows or exclude unneeded columns",
+		datasize.ByteSize(totalRowWeight).HumanReadable(),
+		datasize.ByteSize(maxExcelFileSize).HumanReadable())
 }
 
 // makeHeader creates mapping from column name to indexed excel column.
@@ -489,7 +571,8 @@ func makeHeader(columns []string, s *schema.Schema) map[string]*Column {
 }
 
 // writeHeader writes column names on the first row of the sheet and,
-// unless omitTypes is set, their types on the second.
+// unless omitTypes is set, their types on the second using Excelize's
+// non-streaming API.
 func writeHeader(header map[string]*Column, w *excelize.File, omitTypes bool) error {
 	for name, col := range header {
 		axis, _ := excelize.CoordinatesToCellName(col.Index, 1)
@@ -504,7 +587,25 @@ func writeHeader(header map[string]*Column, w *excelize.File, omitTypes bool) er
 			}
 		}
 	}
+	return nil
+}
 
+func writeStreamHeader(header map[string]*Column, w *excelize.StreamWriter, omitTypes bool) error {
+	names := make([]interface{}, len(header))
+	types := make([]interface{}, len(header))
+	for name, col := range header {
+		names[col.Index-1] = name
+		types[col.Index-1] = col.Column.Type
+	}
+
+	if err := w.SetRow("A1", names); err != nil {
+		return err
+	}
+	if !omitTypes {
+		if err := w.SetRow("A2", types); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

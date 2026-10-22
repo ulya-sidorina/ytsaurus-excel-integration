@@ -95,7 +95,10 @@ func (a *API) exportTable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	opts := &exporter.ExportOptions{MaxExcelFileSize: a.conf.maxExcelFileSize}
+	opts := &exporter.ExportOptions{
+		MaxExcelFileSize:     a.conf.maxExcelFileSize,
+		EnableStreamingWrite: a.conf.enableStreamingWrite,
+	}
 	rsp, err := exporter.Export(r.Context(), a.yc, req, opts)
 	if err != nil {
 		if errors.Is(err, exporter.ErrBadRequest) {
@@ -105,10 +108,17 @@ func (a *API) exportTable(w http.ResponseWriter, r *http.Request) {
 		replyError(w, r, err, http.StatusInternalServerError)
 		return
 	}
+	defer func() {
+		if err := rsp.File.Close(); err != nil {
+			a.l.Error("error closing excel file", log.Error(err))
+		}
+	}()
 
 	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", rsp.Filename))
-	_ = rsp.File.Write(w)
+	if err := rsp.File.Write(w); err != nil {
+		a.l.Error("error writing excel response", log.Error(err))
+	}
 }
 
 func validateNumberPrecisionMode(mode *exporter.NumberPrecisionMode) error {
@@ -239,7 +249,10 @@ func (a *API) exportQueryResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	opts := &exporter.ExportOptions{MaxExcelFileSize: a.conf.maxExcelFileSize}
+	opts := &exporter.ExportOptions{
+		MaxExcelFileSize:     a.conf.maxExcelFileSize,
+		EnableStreamingWrite: a.conf.enableStreamingWrite,
+	}
 	rsp, err := exporter.ExportQueryResult(r.Context(), a.yc, req, opts)
 	if err != nil {
 		if errors.Is(err, exporter.ErrBadRequest) {
@@ -249,8 +262,15 @@ func (a *API) exportQueryResult(w http.ResponseWriter, r *http.Request) {
 		replyError(w, r, err, http.StatusInternalServerError)
 		return
 	}
+	defer func() {
+		if err := rsp.File.Close(); err != nil {
+			a.l.Error("error closing excel file", log.Error(err))
+		}
+	}()
 
 	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", rsp.Filename))
-	_ = rsp.File.Write(w)
+	if err := rsp.File.Write(w); err != nil {
+		a.l.Error("error writing excel response", log.Error(err))
+	}
 }

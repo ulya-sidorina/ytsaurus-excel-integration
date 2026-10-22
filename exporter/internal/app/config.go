@@ -18,11 +18,12 @@ const (
 
 // Config is an app config.
 type Config struct {
-	HTTPAddr           string        `yaml:"http_addr"`
-	DebugHTTPAddr      string        `yaml:"debug_http_addr"`
-	HTTPHandlerTimeout time.Duration `yaml:"http_handler_timeout"`
-	MaxExcelFileSize   int           `yaml:"max_excel_file_size_bytes"`
-	APIPathPrefix      string        `yaml:"api_path_prefix"`
+	HTTPAddr             string        `yaml:"http_addr"`
+	DebugHTTPAddr        string        `yaml:"debug_http_addr"`
+	HTTPHandlerTimeout   time.Duration `yaml:"http_handler_timeout"`
+	MaxExcelFileSize     int           `yaml:"max_excel_file_size_bytes"`
+	EnableStreamingWrite bool          `yaml:"enable_streaming_write"`
+	APIPathPrefix        string        `yaml:"api_path_prefix"`
 	// AuthCookieName is a request cookie that service forwards to YT.
 	// YT proxy uses this cookie to authorize requester.
 	// Session_id by default.
@@ -78,6 +79,7 @@ func (c *Config) UnmarshalYAML(unmarshal func(any) error) error {
 			conf.APIEndpointName = conf.Proxy
 		}
 		conf.maxExcelFileSize = c.MaxExcelFileSize
+		conf.enableStreamingWrite = c.EnableStreamingWrite
 	}
 	c.clustersByProxy = byProxy
 
@@ -103,5 +105,6 @@ type ClusterConfig struct {
 	// UseTLS enables TLS for connections to this cluster.
 	UseTLS bool `yaml:"use_tls"`
 
-	maxExcelFileSize int
+	maxExcelFileSize     int
+	enableStreamingWrite bool
 }

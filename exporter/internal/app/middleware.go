@@ -45,8 +45,6 @@ func requestLog(l log.Structured) func(next http.Handler) http.Handler {
 			requestIDField := log.String("request_id", requestID.String())
 
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-			resp := &bytes.Buffer{}
-			ww.Tee(resp)
 
 			const bodySizeLimit = 1024 * 1024
 			body, err := io.ReadAll(io.LimitReader(r.Body, bodySizeLimit))
